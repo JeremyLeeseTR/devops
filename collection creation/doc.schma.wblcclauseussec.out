@@ -1,0 +1,150 @@
+create role docread
+            *
+ERROR at line 1:
+ORA-01921: role name 'DOCREAD' conflicts with another user or role name 
+
+
+create role docupd
+            *
+ERROR at line 1:
+ORA-01921: role name 'DOCUPD' conflicts with another user or role name 
+
+
+create user docr identified by n0vu5r default tablespace users
+            *
+ERROR at line 1:
+ORA-01920: user name 'DOCR' conflicts with another user or role name 
+
+
+create user docu identified by n0vu5u default tablespace users
+            *
+ERROR at line 1:
+ORA-01920: user name 'DOCU' conflicts with another user or role name 
+
+
+create user novusr1 identified by n0vu5r default tablespace users
+            *
+ERROR at line 1:
+ORA-01920: user name 'NOVUSR1' conflicts with another user or role name 
+
+
+create user novusr2 identified by n0vu5r default tablespace users
+            *
+ERROR at line 1:
+ORA-01920: user name 'NOVUSR2' conflicts with another user or role name 
+
+
+create user devr identified by n0vu5r default tablespace users
+            *
+ERROR at line 1:
+ORA-01920: user name 'DEVR' conflicts with another user or role name 
+
+
+create user novusu1 identified by n0vu5u default tablespace users
+            *
+ERROR at line 1:
+ORA-01920: user name 'NOVUSU1' conflicts with another user or role name 
+
+
+create user novusu2 identified by n0vu5u default tablespace users
+            *
+ERROR at line 1:
+ORA-01920: user name 'NOVUSU2' conflicts with another user or role name 
+
+
+
+User created.
+
+
+Grant succeeded.
+
+
+Grant succeeded.
+
+
+Grant succeeded.
+
+
+Grant succeeded.
+
+
+Grant succeeded.
+
+
+Grant succeeded.
+
+
+Grant succeeded.
+
+
+Grant succeeded.
+
+
+Grant succeeded.
+
+
+Grant succeeded.
+
+
+Grant succeeded.
+
+
+Grant succeeded.
+
+
+User altered.
+
+
+Table created.
+
+
+1 row created.
+
+
+1 row created.
+
+
+1 row created.
+
+
+1 row created.
+
+
+Table created.
+
+
+Index created.
+
+
+Table created.
+
+
+Table created.
+
+
+Index created.
+
+
+Grant succeeded.
+
+
+Grant succeeded.
+
+
+Grant succeeded.
+
+
+Grant succeeded.
+
+
+Grant succeeded.
+
+
+Grant succeeded.
+
+
+Grant succeeded.
+
+
+Grant succeeded.
+

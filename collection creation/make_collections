@@ -1,0 +1,294 @@
+#!/bin/bash
+#################################################################
+#  cretbspc  for Oracle
+#
+#  This script will create a new set of collections.
+#
+#  Changes:
+#    Date      User                 Description
+#  --------  --------    -----------------------------------------
+#  09/15/05  Pat Elliott Created Script
+#  04/12/06  Craig Albrecht - Updated to be used w/OLD or NEW Filesystem
+#  04/17/06  Craig Albrecht - Updated for "tocv" collections type
+#                           - It now has it's own "skel" file
+#  12/22/09  Debbie George - Remove calls to oraenv, using csid function instead
+#  03/26/10  DMG       Update calls to check_FS_version
+#  07/26/10  DMG       Call get_fs_group to determine filesystem group
+#  04/15/13  SAB         added a leading : to getopts to fix the 'illegal option -- ?' error message
+#  09/19/13  DMG       support for nosnap
+#  04/24/15  DMG       support 2 character filesystem group
+#  08/11/16  DMG       Disallow use of "-t" arg (run the tablespace create scripts) with dbmode physical,drone,activedg
+#                      Disallow use of "-s" arg (run the schema create scripts) with dbmode standby,secondary,physical,drone,activedg
+#  17/01/18  SCS       Fixed a bug introduced by RHEL 7 in the space check command
+#  15/10/19  PKA       Modified the script to verify the existance of collections for new NOVUS BU Requirements.
+#################################################################
+
+function USAGE
+{
+echo ""
+echo "*** USAGE ***"
+echo "make_collections -d <db> -f <file_name> [-t] [-s] -?"
+echo "  -d <db> name of the database"
+echo "  -f <file_name> name of the file containing collection information"
+echo "  -t run the tablespace create scripts"
+echo "  -s run the schema create scripts"
+echo "  -? displays usage information"
+echo ""
+echo "  NOTE: Updated to use OLD or NEW filesystem Layout"
+echo ""
+}
+
+function GET_PDBNAME
+{
+if [[ -z $PDBN ]]; then
+  PDBS=`$ORACLE_HOME/bin/sqlplus -s <<EOF
+  / as sysdba
+  set echo off feed off head off pagesize 0
+  select lower(name) from v\\$pdbs where name != 'PDB\\$SEED';
+EOF`
+  NUMPDBS=`echo $PDBS | wc -w`
+  if [[ $NUMPDBS -eq 0 ]]; then
+    echo "No PDBs found, exiting"
+    exit
+  elif [[ $NUMPDBS -eq 1 ]]; then
+    PDBN=$PDBS
+  elif [[ $NUMPDBS -gt 1 ]]; then
+    echo "multiple PDBs found, please use -n argument to supply PDB name"
+    USAGE
+    exit
+  fi
+else
+  PDBN=`lower_case $PDBN`
+  PDBVALID=`$ORACLE_HOME/bin/sqlplus -s <<EOF
+  / as sysdba
+  set echo off feed off head off pagesize 0
+  select 'TRUE' from v\\$pdbs where lower(name)='$PDBN';
+EOF`
+  if [[ $PDBVALID != "TRUE" ]]; then
+    echo "$PDBN is not a valid PDB in this container database"
+    USAGE
+    exit
+  fi
+fi
+}
+
+
+function VERIFY_COLLECTIONS
+{
+ACT=$1
+FILE_LN=`wc -l $FILE`
+if [ `wc -l $FILE|awk '{print $1}'` -gt 0 ];then
+  printf "%20s%22s%20s%23s%20s \n" "COLLECTION" "FOOOUND_YN" "TABLESPACE NAME" "FOOOUND_YN" "NO_OBJECTS" >> $COLLLIST
+  echo "--------------------------------------------------------------------------------------------------------------------------------------" >> $COLLLIST
+fi
+cat $FILE | egrep -v "^[ 	]*#|^[ 	]*$" |
+while read coll type sizes otypes filesystems ; do
+  coll=`echo $coll | tr "[:lower:]" "[:upper:]" | sed 's/_//g'`
+  chars=`echo $coll | wc -c`
+  if [ $chars -gt 20 ] ; then
+    echo "Collection name $coll has too many characters with $chars."
+    exit 1
+  fi
+  USERNM=$coll
+  TSNAME="${USERNM}D"
+  TMP_TS_SQL="/tmp/tsname_fnd.sql"
+  echo "set echo off head off feed off pagesize 0" > $TMP_TS_SQL
+  if [ ! -z ${PDBN} ]; then
+  echo "alter session set container=${PDBN};" >> $TMP_TS_SQL
+  fi
+  echo "select DECODE(count(1),0,'NFFND','FOOOUND') FND from dba_tablespaces where tablespace_name = '$TSNAME';" >> $TMP_TS_SQL
+  echo "exit; " >> $TMP_TS_SQL
+  TSNAME_FND=`sqlplus -s "/ as sysdba" @${TMP_TS_SQL}` 
+  TMP_UN_SQL="/tmp/username_fnd.sql"
+  echo "set echo off head off feed off pagesize 0" > $TMP_UN_SQL
+  if [ ! -z ${PDBN} ]; then
+  echo "alter session set container=${PDBN};" >> $TMP_UN_SQL
+  fi
+  echo "select DECODE(count(1),0,'NFFND','FOOOUND') FND from dba_users where username = '$USERNM'; " >> $TMP_UN_SQL
+  echo "exit;" >> $TMP_UN_SQL
+  USERNM_FND=`sqlplus -s "/ as sysdba" @${TMP_UN_SQL}`
+  TMP_OBJ_SQL="/tmp/objects_fnd.sql"
+  echo "set echo off head off feed off pagesize 0" > $TMP_OBJ_SQL
+  if [ ! -z ${PDBN} ]; then
+  echo "alter session set container=${PDBN};" >> $TMP_OBJ_SQL
+  fi
+  echo "select count(1) FND from dba_objects where owner = '$USERNM';" >> $TMP_OBJ_SQL
+  echo "exit;" >> $TMP_OBJ_SQL
+  OBJECTS_FND=`sqlplus -s "/ as sysdba" @${TMP_OBJ_SQL}` 
+
+  if [ "$ACT" == "POST" ];then
+   SSTR="FOUND"
+  else
+   SSTR="NFND" 
+  fi
+rm $TMP_TS_SQL $TMP_UN_SQL $TMP_OBJ_SQL > /dev/null
+printf "%20s%22s%20s%23s%20s \n" "$coll" "$USERNM_FND" "$TSNAME" "$TSNAME_FND" "$OBJECTS_FND" >> $COLLLIST
+done
+
+if [ "$ACT" == "PRE" ]; then
+  if [ `grep -c "FOUND" $COLLLIST` -gt 0 ]; then
+    echo "Following collections found, Please check and make necessary modifications in the config file"
+    grep "FOOOUND" $COLLLIST | sed 's/FOOOUND/    FOUND/g'
+    exit 1
+  else
+    echo "No collections found, Proceeding with Creating the colletions"
+  fi
+elif [ "$ACT" == "POST" ]; then
+  if [ `grep -c "NFFND" $COLLLIST` -gt 0 ]; then
+    echo "Following collections failed to create "
+    grep "NFFND" $COLLLIST | sed 's/NFFND/NOT-FOUND/g'
+    exit 1
+  else
+    echo "All collections created Successfully"
+    cat $COLLLIST | sed 's/NFFND/NOT-FOUND/g' | sed 's/FOOOUND/    FOUND/g' 
+  fi
+else
+   echo ""
+   cat $COLLLIST | sed 's/NFFND/NOT-FOUND/g' | sed 's/FOOOUND/    FOUND/g' 
+   echo ""
+fi
+rm $COLLLIST
+}
+
+####################################################################
+# ASSIGN INPUT ARGUMENTS TO VARIABLES 
+####################################################################
+
+RUN_TS=0
+RUN_SCH=0
+argcnt=0
+USR_FND=0
+TS_FND=0
+VERIFY_YN=0
+PDBN=
+STAMP=`date '+%Y%m%d%H%M%S'`
+COLLLIST=$DBA/tmp/test_tmp_servlist_$STAMP
+while getopts :d:f:tsv z
+do
+  case $z in
+  d)	DATB=$OPTARG
+        let argcnt=argcnt+1;;
+  f)	FILE=$OPTARG
+        let argcnt=argcnt+1;;
+  t)    RUN_TS=1;;
+  s)    RUN_SCH=1;;
+  v)    VERIFY_YN=1;;
+  \?)	USAGE
+	exit 1;;
+  esac
+done
+if [ $argcnt -ne 2 ] ; then
+  USAGE
+  exit 1
+fi
+#
+# -- Old or New FileSystem as of 12-Apr-2006 <cpa>
+#
+. /home/oracle/.bash_profile
+. ${DBA}/bin/ora_standard_functions
+get_db_architecture
+if [ "$DB_ARCHITECTURE" == "VCS" ]; then
+  export ORA_ADMIN="/oraadmin1"
+  export ORA_DBF="/oradata"
+else
+  check_FS_version
+  if [ "${FS_LAYOUT}" == "VTHREE" ]; then
+    get_fs_group $DATB
+    export ORA_ADMIN="/s$FS_GROUP/oraadmin1"         # -- NEW NEW
+    if [[ $ORADATA_SNAP = "YES" ]]; then
+      export ORA_DBF="/s$FS_GROUP/oradata"
+    else
+      export ORA_DBF="/n$FS_GROUP/oradata"
+    fi
+  elif [ "${FS_LAYOUT}" == "VTWO" ]; then
+    get_fs_group $DATB
+    export ORA_ADMIN="/n$FS_GROUP/oraadmin1"         # -- NEW
+    if [[ $ORADATA_SNAP = "YES" ]]; then
+      export ORA_DBF="/s$FS_GROUP/oradata"
+    else
+      export ORA_DBF="/n$FS_GROUP/oradata"
+    fi
+  else
+    export ORA_ADMIN="$HOME/admin"  # -- OLD
+    export ORA_DBF="/u02/oradata"
+  fi
+fi
+#
+##cd $HOME/admin/$DATB*/scripts
+cd ${ORA_ADMIN}/${DATB}/scripts
+if [ $? -ne 0 ] ; then
+  echo "Invalid database name of $DATB"
+  USAGE
+  exit 1
+fi
+export ORACLE_SID=$DATB
+csid $DATB
+check_CDB $DATB
+  if [[ $CHECK_CDB = "TRUE" ]]; then
+    GET_PDBNAME
+  fi
+get_dbmode $DATB
+if [[ $DBMODE = "physical" || $DBMODE = "drone" || $DBMODE = "activedg" ]]; then
+  if [ $RUN_TS -eq 1 ] ; then
+    echo "WARNING: \"-t\" arg (run the tablespace create scripts) is not valid with dbmode $DBMODE, overriding"
+    RUN_TS=0
+  fi
+fi
+if [[ $DBMODE = "standby" || $DBMODE = "secondary" || $DBMODE = "physical" || $DBMODE = "drone" || $DBMODE = "activedg" ]]; then
+  if [ $RUN_SCH -eq 1 ] ; then
+    echo "WARNING: \"-s\" arg (run the schema create scripts) is not valid with dbmode $DBMODE, overriding"
+    RUN_SCH=0  
+  fi
+fi
+if [ $VERIFY_YN -eq 0 ]; then
+VERIFY_COLLECTIONS PRE
+cat $FILE | egrep -v "^[ 	]*#|^[ 	]*$" |
+while read coll type sizes otypes filesystems ; do
+  coll=`echo $coll | tr "[:upper:]" "[:lower:]" | sed 's/_//g'`
+  chars=`echo $coll | wc -c`
+  if [ $chars -gt 20 ] ; then
+    echo "Collection name $coll has too many characters with $chars."
+    exit 1
+  fi
+  for fsnum in `echo $filesystems | sed 's/~/ /g'` ; do
+    ##pct_used=`df -k /u02/oradata$fsnum | tail -1 | awk '{print $4+0}'`
+    if [ "$DB_ARCHITECTURE" == "VCS" ]; then 
+      pct_used=`df -Pk ${ORA_DBF}$fsnum | tail -1 | /usr/xpg4/bin/awk '{print $5+0}'`	
+    else
+      pct_used=`df -Pk ${ORA_DBF}$fsnum | tail -1 | awk '{print $5+0}'`
+    fi
+    if [ $pct_used -ge 90 ] ; then
+      ##echo "Filesystem /u02/oradata$fsnum is too full at $pct_used percent."
+      echo "Filesystem ${ORA_DBF}$fsnum is too full at $pct_used percent."
+      exit 1
+    fi
+  done
+  oratbspc -d $DATB -s $coll -t $type -p $sizes -f $filesystems
+  if [ $? -ne 0 ] ; then 
+    exit $?
+  fi
+  oraschma -d $DATB -s $coll -t $type -f $otypes
+  if [ $? -ne 0 ] ; then 
+    exit $?
+  fi
+  if [ $RUN_TS -eq 1 ] ; then
+    echo "spool $type.tbspc.$coll.out
+    set pages 40 lines 130
+    set echo on
+    @$type.tbspc.$coll.sql
+    spool close 
+    exit" | sqlplus -s '/ as sysdba'
+  fi
+  if [ $RUN_SCH -eq 1 ] ; then
+    echo "spool $type.schma.$coll.out
+    set pages 40 lines 130
+    set echo on
+    @$type.schma.$coll.sql
+    spool close 
+    exit" | sqlplus -s '/ as sysdba'
+  fi
+done
+VERIFY_COLLECTIONS POST
+elif [ $VERIFY_YN -eq 1 ]; then
+  VERIFY_COLLECTIONS 
+fi
